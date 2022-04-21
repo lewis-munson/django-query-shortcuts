@@ -4,8 +4,8 @@ with open('README.md', 'r') as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name='django-query-shortcuts',
-    version='1.0.0',
+    name='django_query_shortcuts',
+    version='1.0.1',
     author='Lewis Munson',
     author_email='73261043+lewis-munson@users.noreply.github.com',
     description='Helpful utilities for reducing repetition in Django queries',
