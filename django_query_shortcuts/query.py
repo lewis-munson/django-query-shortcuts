@@ -236,15 +236,20 @@ class SearchableQuerySet(models.QuerySet):
             else:
                 raw_search_fields.append(search_field)
 
+        related_field_cache = {
+            related_field: self.get_related_field_queryset(related_field).search(
+                query,
+                search_fields=related_search_fields,
+                annotate_rank=annotate_rank,
+                annotate_headlines=annotate_headlines,
+            ) for related_field, related_search_fields in related_model_lookups.items()
+        }
+
         filter_conds = [
             Q(**{
-                '{}__in'.format(related_field): self.get_related_field_queryset(related_field).search(
-                    query,
-                    search_fields=related_search_fields,
-                    annotate_rank=annotate_rank,
-                    annotate_headlines=annotate_headlines,
-                ).values_list('id')
-            }) for related_field, related_search_fields in related_model_lookups.items()
+                '{}__in'.format(related_field): [_.id for _ in related_field_cache[related_field]]
+                for related_field in related_field_cache
+            }),
         ]
 
         queryset = self
@@ -300,14 +305,9 @@ class SearchableQuerySet(models.QuerySet):
                 *[
                     Prefetch(
                         related_field,
-                        queryset=self.get_related_field_queryset(related_field).search(
-                            query,
-                            search_fields=related_search_fields,
-                            annotate_rank=annotate_rank,
-                            annotate_headlines=annotate_headlines,
-                        ),
+                        queryset=related_field_cache[related_field],
                         to_attr='{}_search_results'.format(related_field),
-                    ) for related_field, related_search_fields in related_model_lookups.items()
+                    ) for related_field in related_field_cache
                 ],
             )
 
