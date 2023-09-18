@@ -1,10 +1,24 @@
 import copy
 import inspect
+import re
+from functools import reduce
 from functools import update_wrapper
+from operator import add
+from operator import and_
+from operator import ior
 
+from django.contrib.postgres.search import SearchHeadline
+from django.contrib.postgres.search import SearchQuery
+from django.contrib.postgres.search import SearchRank
+from django.contrib.postgres.search import SearchVector
 from django.db import models
+from django.db.models import F
+from django.db.models import Prefetch
 from django.db.models import Q
 from django.db.models.constants import LOOKUP_SEP
+from django.utils.html import escape
+from django.utils.safestring import SafeData
+from django.utils.safestring import mark_safe
 
 
 class q_shortcut:
@@ -76,3 +90,293 @@ class QObjQuerySet(models.QuerySet):
         manager._built_with_as_manager = True
 
         return manager()
+
+
+class Tokenizer:
+    TOKEN_REGEX = re.compile(r"[^\s\"\']+|\"([^\"]*)\"|\'([^\']*)")
+    DEFAULT_OPERATOR = '|'
+    OPERATORS = (
+        '|',
+        '+',
+        '-',
+    )
+
+    def __init__(self, query):
+        self.sorted_queries = {}
+
+        hanging_operator = None
+
+        for token in (_.group() for _ in self.TOKEN_REGEX.finditer(query)):
+            search_type = 'raw'
+
+            operator = self.DEFAULT_OPERATOR
+
+            if token[0] in self.OPERATORS:
+                operator = token[0]
+
+                token = token[1:]
+
+                if len(token.strip()) == 0:
+                    hanging_operator = operator
+
+                    continue
+
+            if token.startswith('"') and token.endswith('"'):
+                token = token.strip('"')
+
+                search_type = 'phrase'
+
+                if hanging_operator is not None:
+                    operator = hanging_operator
+
+            hanging_operator = None
+
+            if search_type == 'raw' and token[-1] == '*':
+                token = '{}:*'.format(token[:-1])
+
+            negated = token.startswith('!')
+
+            # remove bad characters
+            translation_table = str.maketrans({
+                '\\': None,
+                '\'': None,
+                ':': None,
+                '!': None,
+                '&': None,
+                '|': None,
+                '*': None,
+                '(': None,
+                ')': None,
+                '"': None,
+            })
+
+            token = token.translate(translation_table)
+
+            # skip if token is now empty
+            if len(token) == 0:
+                continue
+
+            if negated:
+                token = '!{}'.format(token)
+
+            try:
+                self.sorted_queries[operator].append((token, search_type))
+            except KeyError:
+                self.sorted_queries[operator] = [(token, search_type)]
+
+    def iter_tokens(self):
+        for operator, tokens in self.sorted_queries.items():
+            for token, search_type in tokens:
+                yield operator, token, search_type
+
+
+def build_postgres_search_query(query):
+    search_query = None
+    negations = []
+
+    for operator, token, search_type in Tokenizer(query).iter_tokens():
+        sq = SearchQuery(token, search_type=search_type)
+
+        if operator == "-":
+            negations.append(~sq)
+
+            continue
+
+        if search_query is None:
+            search_query = sq
+        elif operator == "|":
+            search_query = search_query | sq
+        else:
+            search_query = search_query & sq
+
+    if len(negations) > 0:
+        negation = reduce(
+            and_,
+            negations,
+        )
+
+        search_query = negation if search_query is None else search_query & negation
+
+    return search_query
+
+
+class SearchableQuerySet(models.QuerySet):
+    SEARCH_FIELDS = ()
+    _searched = False
+
+    def search(self, query, search_fields=None, annotate_rank=True, annotate_headlines=True):
+        if query is None or query.strip() == '':
+            return self.all()
+
+        assert not self._searched, 'This QuerySet has already been searched.'
+
+        self._searched = True
+
+        if search_fields is None:
+            search_fields = self.SEARCH_FIELDS
+
+        search_query = build_postgres_search_query(query)
+
+        raw_search_fields = []
+        related_model_lookups = {}
+
+        for search_field in search_fields:
+            if '__' in search_field:
+                lookup_parts = search_field.split('__')
+                first_lookup = lookup_parts[0]
+                django_field = self.model._meta.get_field(first_lookup)
+
+                if hasattr(django_field, 'related_model'):
+                    related_model_lookups.setdefault(first_lookup, ())
+                    related_model_lookups[first_lookup] += (
+                        '__'.join(lookup_parts[1:]),
+                    )
+                else:
+                    raise ValueError('Unknown lookup {} for search'.format(search_field))
+            else:
+                raw_search_fields.append(search_field)
+
+        filter_conds = [
+            Q(**{
+                '{}__in'.format(related_field): self.get_related_field_queryset(related_field).search(
+                    query,
+                    search_fields=related_search_fields,
+                    annotate_rank=annotate_rank,
+                    annotate_headlines=annotate_headlines,
+                ).values_list('id')
+            }) for related_field, related_search_fields in related_model_lookups.items()
+        ]
+
+        queryset = self
+
+        if len(raw_search_fields) > 0:
+            filter_conds.append(Q(search_vector=search_query))
+
+            queryset = queryset.annotate(
+                search_vector=reduce(
+                    add,
+                    [SearchVector(field) for field in raw_search_fields],
+                ),
+            )
+
+        queryset = queryset.filter(
+            reduce(
+                ior,
+                filter_conds,
+            ),
+        )
+
+        if len(raw_search_fields) > 0:
+            if annotate_rank:
+                queryset = queryset.annotate(
+                    search_rank=SearchRank(
+                        F('search_vector'),
+                        search_query,
+                        normalization=2,
+                    ),
+                )
+
+            if annotate_headlines:
+                queryset = queryset.annotate(
+                    **{
+                        '{}_headline'.format(field): SearchHeadline(
+                            field,
+                            search_query,
+                            start_sel='--SEARCH_HIGHLIGHT--',
+                            stop_sel='--END_SEARCH_HIGHLIGHT--',
+                            short_word=0,
+                            highlight_all=True,
+                        ) for field in raw_search_fields
+                    },
+                )
+
+        if len(related_model_lookups) > 0 and annotate_headlines:
+            if isinstance(queryset.query.select_related, dict):
+                for related_field in related_model_lookups:
+                    # pop conflicting select_related since Django will use this over the prefetch
+                    queryset.query.select_related.pop(related_field, None)
+
+            queryset = queryset.prefetch_related(
+                *[
+                    Prefetch(
+                        related_field,
+                        queryset=self.get_related_field_queryset(related_field).search(
+                            query,
+                            search_fields=related_search_fields,
+                            annotate_rank=annotate_rank,
+                            annotate_headlines=annotate_headlines,
+                        ),
+                        to_attr='{}_search_results'.format(related_field),
+                    ) for related_field, related_search_fields in related_model_lookups.items()
+                ],
+            )
+
+        return queryset
+
+    def get_related_field_queryset(self, related_field):
+        return self.model._meta.get_field(related_field).related_model.objects.all()
+
+    def _clone(self):
+        clone = super()._clone()
+
+        clone._searched = self._searched
+
+        return clone
+
+    def _fetch_all(self):
+        super()._fetch_all()
+
+        if not self._searched:
+            return
+
+        for res in self._result_cache:
+            if hasattr(res, 'search_details'):
+                continue
+
+            res.search_details = {}
+
+            for field in self.SEARCH_FIELDS:
+                if '__' in field:
+                    related_field = field.split('__')[0]
+
+                    prefetched_related = getattr(res, '{}_search_results'.format(related_field), None)
+
+                    if prefetched_related:
+                        if isinstance(prefetched_related, list):
+                            res.search_details[related_field] = [_.search_details for _ in prefetched_related]
+                        else:
+                            res.search_details[related_field] = prefetched_related.search_details
+                            setattr(res, related_field, prefetched_related)
+                    else:
+                        pass
+                else:
+                    field_headline = '{}_headline'.format(field)
+
+                    if hasattr(res, field_headline):
+                        value = getattr(res, field_headline)
+
+                        if value is None:
+                            continue
+
+                        if isinstance(value, SafeData):
+                            # already cleaned
+                            continue
+
+                        if '--SEARCH_HIGHLIGHT--' not in value:
+                            # why does it have a value with no matches?
+                            delattr(res, field_headline)
+                            continue
+
+                        value = escape(value)
+                        value = value.replace('--SEARCH_HIGHLIGHT--', '<b class="highlight">')
+                        value = value.replace('--END_SEARCH_HIGHLIGHT--', '</b>')
+                        value = mark_safe(value)
+
+                        res.search_details[field] = value
+
+                        setattr(res, field_headline, value)
+
+        self._add_to_search_details()
+
+    def _add_to_search_details(self):
+        pass
