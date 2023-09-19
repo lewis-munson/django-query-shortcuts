@@ -243,12 +243,10 @@ class SearchableQuerySet(models.QuerySet):
         }
 
         filter_conds = [
-            Q(
-                *(
-                    self.write_lookup(related_field)
-                    for related_field in self._related_field_cache
-                )
-            ),
+            *(
+                self.write_lookup(related_field)
+                for related_field in self._related_field_cache
+            )
         ]
 
         queryset = self
