@@ -203,6 +203,7 @@ def build_postgres_search_query(query):
 class SearchableQuerySet(models.QuerySet):
     SEARCH_FIELDS = ()
     _searched = False
+    _related_field_cache = None
 
     def search(self, query, search_fields=None, annotate_rank=True, annotate_headlines=True):
         if query is None or query.strip() == '':
@@ -224,19 +225,15 @@ class SearchableQuerySet(models.QuerySet):
             if '__' in search_field:
                 lookup_parts = search_field.split('__')
                 first_lookup = lookup_parts[0]
-                django_field = self.model._meta.get_field(first_lookup)
 
-                if hasattr(django_field, 'related_model'):
-                    related_model_lookups.setdefault(first_lookup, ())
-                    related_model_lookups[first_lookup] += (
-                        '__'.join(lookup_parts[1:]),
-                    )
-                else:
-                    raise ValueError('Unknown lookup {} for search'.format(search_field))
+                related_model_lookups.setdefault(first_lookup, ())
+                related_model_lookups[first_lookup] += (
+                    '__'.join(lookup_parts[1:]),
+                )
             else:
                 raw_search_fields.append(search_field)
 
-        related_field_cache = {
+        self._related_field_cache = {
             related_field: self.get_related_field_queryset(related_field).search(
                 query,
                 search_fields=related_search_fields,
@@ -246,10 +243,12 @@ class SearchableQuerySet(models.QuerySet):
         }
 
         filter_conds = [
-            Q(**{
-                '{}__in'.format(related_field): [_.id for _ in related_field_cache[related_field]]
-                for related_field in related_field_cache
-            }),
+            Q(
+                *(
+                    self.write_lookup(related_field)
+                    for related_field in self._related_field_cache
+                )
+            ),
         ]
 
         queryset = self
@@ -305,9 +304,9 @@ class SearchableQuerySet(models.QuerySet):
                 *[
                     Prefetch(
                         related_field,
-                        queryset=related_field_cache[related_field],
+                        queryset=self._related_field_cache[related_field],
                         to_attr='{}_search_results'.format(related_field),
-                    ) for related_field in related_field_cache
+                    ) for related_field in self._related_field_cache if self.supports_prefetch(related_field)
                 ],
             )
 
@@ -316,10 +315,23 @@ class SearchableQuerySet(models.QuerySet):
     def get_related_field_queryset(self, related_field):
         return self.model._meta.get_field(related_field).related_model.objects.all()
 
+    def write_lookup(self, related_field):
+        return Q(**{
+            '{}__in'.format(related_field): [_.id for _ in self._related_field_cache[related_field]],
+        })
+
+    def supports_prefetch(self, related_field):
+        return True
+
+    def manual_prefetch(self, obj, related_field):
+        raise NotImplementedError()
+
     def _clone(self):
         clone = super()._clone()
 
         clone._searched = self._searched
+        if self._related_field_cache:
+            clone._related_field_cache = self._related_field_cache.copy()
 
         return clone
 
@@ -333,6 +345,9 @@ class SearchableQuerySet(models.QuerySet):
             if hasattr(res, 'search_details'):
                 continue
 
+            if not isinstance(res, self.model):
+                continue
+
             res.search_details = {}
 
             for field in self.SEARCH_FIELDS:
@@ -341,14 +356,18 @@ class SearchableQuerySet(models.QuerySet):
 
                     prefetched_related = getattr(res, '{}_search_results'.format(related_field), None)
 
+                    if prefetched_related is None:
+                        try:
+                            prefetched_related = self.manual_prefetch(res, related_field)
+                        except NotImplementedError:
+                            pass
+
                     if prefetched_related:
                         if isinstance(prefetched_related, list):
                             res.search_details[related_field] = [_.search_details for _ in prefetched_related]
                         else:
                             res.search_details[related_field] = prefetched_related.search_details
                             setattr(res, related_field, prefetched_related)
-                    else:
-                        pass
                 else:
                     field_headline = '{}_headline'.format(field)
 
