@@ -131,10 +131,9 @@ class Tokenizer:
 
             hanging_operator = None
 
+            prefix_search = False
             if search_type == 'raw' and token[-1] == '*':
-                token = '{}:*'.format(token[:-1])
-
-            negated = token.startswith('!')
+                prefix_search = True
 
             # remove bad characters
             translation_table = str.maketrans({
@@ -156,8 +155,8 @@ class Tokenizer:
             if len(token) == 0:
                 continue
 
-            if negated:
-                token = '!{}'.format(token)
+            if prefix_search:
+                token = '{}:*'.format(token[:-1])
 
             try:
                 self.sorted_queries[operator].append((token, search_type))
