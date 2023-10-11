@@ -212,12 +212,12 @@ class SearchableQuerySet(models.QuerySet):
 
         assert not self._searched, 'This QuerySet has already been searched.'
 
+        if search_fields is None:
+            search_fields = self.SEARCH_FIELDS
+
         self._searched = True
         self._annotate_headlines = annotate_headlines
         self._search_fields = search_fields
-
-        if search_fields is None:
-            search_fields = self.SEARCH_FIELDS
 
         search_query = build_postgres_search_query(query)
 
