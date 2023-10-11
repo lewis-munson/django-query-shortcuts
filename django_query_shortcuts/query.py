@@ -203,6 +203,7 @@ class SearchableQuerySet(models.QuerySet):
     SEARCH_FIELDS = ()
     _searched = False
     _related_field_cache = None
+    _annotate_headlines = None
 
     def search(self, query, search_fields=None, annotate_rank=True, annotate_headlines=True):
         if query is None or query.strip() == '':
@@ -211,6 +212,7 @@ class SearchableQuerySet(models.QuerySet):
         assert not self._searched, 'This QuerySet has already been searched.'
 
         self._searched = True
+        self._annotate_headlines = annotate_headlines
 
         if search_fields is None:
             search_fields = self.SEARCH_FIELDS
@@ -327,6 +329,8 @@ class SearchableQuerySet(models.QuerySet):
         clone = super()._clone()
 
         clone._searched = self._searched
+        clone._annotate_headlines = self._annotate_headlines
+
         if self._related_field_cache:
             clone._related_field_cache = self._related_field_cache.copy()
 
@@ -335,7 +339,7 @@ class SearchableQuerySet(models.QuerySet):
     def _fetch_all(self):
         super()._fetch_all()
 
-        if not self._searched:
+        if not self._searched or not self._annotate_headlines:
             return
 
         for res in self._result_cache:
