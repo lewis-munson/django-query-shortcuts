@@ -202,6 +202,7 @@ def build_postgres_search_query(query):
 class SearchableQuerySet(models.QuerySet):
     SEARCH_FIELDS = ()
     _searched = False
+    _search_fields = None
     _related_field_cache = None
     _annotate_headlines = None
 
@@ -213,6 +214,7 @@ class SearchableQuerySet(models.QuerySet):
 
         self._searched = True
         self._annotate_headlines = annotate_headlines
+        self._search_fields = search_fields
 
         if search_fields is None:
             search_fields = self.SEARCH_FIELDS
@@ -329,6 +331,7 @@ class SearchableQuerySet(models.QuerySet):
         clone = super()._clone()
 
         clone._searched = self._searched
+        clone._search_fields = self._search_fields
         clone._annotate_headlines = self._annotate_headlines
 
         if self._related_field_cache:
@@ -351,7 +354,7 @@ class SearchableQuerySet(models.QuerySet):
 
             res.search_details = {}
 
-            for field in self.SEARCH_FIELDS:
+            for field in self._search_fields:
                 if '__' in field:
                     related_field = field.split('__')[0]
 
