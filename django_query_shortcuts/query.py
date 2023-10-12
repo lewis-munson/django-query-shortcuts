@@ -156,7 +156,7 @@ class Tokenizer:
                 continue
 
             if prefix_search:
-                token = '{}:*'.format(token[:-1])
+                token = '{}:*'.format(token)
 
             try:
                 self.sorted_queries[operator].append((token, search_type))
