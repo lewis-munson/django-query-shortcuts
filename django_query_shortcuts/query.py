@@ -147,6 +147,8 @@ class Tokenizer:
                 '(': None,
                 ')': None,
                 '"': None,
+                '<': None,
+                '>': None,
             })
 
             token = token.translate(translation_table)
