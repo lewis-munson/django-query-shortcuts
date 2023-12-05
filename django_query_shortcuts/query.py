@@ -101,7 +101,7 @@ class Tokenizer:
         '-',
     )
 
-    def __init__(self, query):
+    def __init__(self, query, automatic_prefix_search=False):
         self.sorted_queries = {}
 
         hanging_operator = None
@@ -157,7 +157,7 @@ class Tokenizer:
             if len(token) == 0:
                 continue
 
-            if prefix_search:
+            if (automatic_prefix_search or prefix_search) and len(token) > 3:
                 token = '{}:*'.format(token)
 
             try:
@@ -171,11 +171,11 @@ class Tokenizer:
                 yield operator, token, search_type
 
 
-def build_postgres_search_query(query):
+def build_postgres_search_query(query, automatic_prefix_search=False):
     search_query = None
     negations = []
 
-    for operator, token, search_type in Tokenizer(query).iter_tokens():
+    for operator, token, search_type in Tokenizer(query, automatic_prefix_search=automatic_prefix_search).iter_tokens():
         sq = SearchQuery(token, search_type=search_type)
 
         if operator == "-":
@@ -203,6 +203,8 @@ def build_postgres_search_query(query):
 
 class SearchableQuerySet(models.QuerySet):
     SEARCH_FIELDS = ()
+    AUTOMATIC_PREFIX_SEARCH = False
+
     _searched = False
     _search_fields = None
     _related_field_cache = None
@@ -221,7 +223,7 @@ class SearchableQuerySet(models.QuerySet):
         self._annotate_headlines = annotate_headlines
         self._search_fields = search_fields
 
-        search_query = build_postgres_search_query(query)
+        search_query = build_postgres_search_query(query, automatic_prefix_search=self.AUTOMATIC_PREFIX_SEARCH)
 
         raw_search_fields = []
         related_model_lookups = {}
@@ -365,6 +367,7 @@ class SearchableQuerySet(models.QuerySet):
                     if prefetched_related is None:
                         try:
                             prefetched_related = self.manual_prefetch(res, related_field)
+                            setattr(res, '{}_search_results'.format(related_field), prefetched_related)
                         except NotImplementedError:
                             pass
 
