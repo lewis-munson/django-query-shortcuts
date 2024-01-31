@@ -322,7 +322,7 @@ class SearchableQuerySet(models.QuerySet):
 
     def write_lookup(self, related_field):
         return Q(**{
-            '{}__in'.format(related_field): [_.id for _ in self._related_field_cache[related_field]],
+            '{}__in'.format(related_field): self._related_field_cache[related_field],
         })
 
     def supports_prefetch(self, related_field):
