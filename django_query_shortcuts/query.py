@@ -100,6 +100,7 @@ class Tokenizer:
         '+',
         '-',
     )
+    MINIMUM_PREFIX_CHARACTERS = 3
 
     def __init__(self, query, automatic_prefix_search=False):
         self.sorted_queries = {}
@@ -157,7 +158,7 @@ class Tokenizer:
             if len(token) == 0:
                 continue
 
-            if (automatic_prefix_search or prefix_search) and len(token) > 3:
+            if (automatic_prefix_search or prefix_search) and len(token) >= self.MINIMUM_PREFIX_CHARACTERS:
                 token = '{}:*'.format(token)
 
             try:
