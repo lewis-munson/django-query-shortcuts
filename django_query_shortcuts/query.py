@@ -136,8 +136,7 @@ class Tokenizer:
             if search_type == 'raw' and token[-1] == '*':
                 prefix_search = True
 
-            # remove bad characters
-            translation_table = str.maketrans({
+            bad_character_map = {
                 '\\': None,
                 '\'': None,
                 ':': None,
@@ -150,7 +149,15 @@ class Tokenizer:
                 '"': None,
                 '<': None,
                 '>': None,
-            })
+            }
+
+            if search_type == 'raw':
+                bad_character_map.update({
+                    ' ': None,
+                })
+
+            # remove bad characters
+            translation_table = str.maketrans(bad_character_map)
 
             token = token.translate(translation_table)
 
